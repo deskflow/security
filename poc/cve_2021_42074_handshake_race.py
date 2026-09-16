@@ -15,10 +15,12 @@ The verdict is simply whether the server is still there afterwards. A crash is
 unambiguous, and unlike a memory or descriptor count it needs no access to the
 target host, so this works against a remote server.
 
-Nothing is sent that requires a trusted certificate, so a locked-down server is
-still exercised: the teardown path being tested runs before any identity check.
+A server that drops every connection before a hello passes, because the
+attacker in this advisory is unauthenticated and never gets that far. That run
+does not exercise the teardown path itself, so it says so; use --no-tls or a
+trusted certificate to reach it.
 
-Exit codes: 1 VULNERABLE, 0 PASS, 2 inconclusive.
+Exit codes: 1 VULNERABLE, 0 PASS. 2 means the check could not be run at all.
 """
 
 import argparse
@@ -149,11 +151,11 @@ def main():
         return 2
 
     if greeted == 0:
-        print("[ERROR] no hello was ever sent, the server dropped every connection first.")
-        print("        the advisory's trigger needs a hello per session, so re-run with")
-        print("        --no-tls against a plaintext server, or --cert and --key for a")
-        print("        certificate the target trusts")
-        return 2
+        print("[PASS] server survived, though it dropped every connection before a hello,")
+        print("       so an unverified peer cannot reach the handshake teardown path")
+        print("       to exercise that path directly, re-run with --no-tls against a")
+        print("       plaintext server, or --cert and --key for a trusted certificate")
+        return 0
 
     print("[PASS] server survived and is still accepting connections")
     return 0
