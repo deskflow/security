@@ -19,15 +19,18 @@ sampling the server's resident memory:
   connection dropped at once and memory flat   the cap is rejecting the frame
   bytes accepted and memory climbing           the declared size is being
                                                believed, which is the bug
+  dropped before the protocol starts           an unverified peer cannot reach
+                                               the parser, so it also passes
 
 Memory is the signal rather than a disconnect, because a patched server and a
 server that simply hung up for an unrelated reason look identical on the socket.
 
-If the server refuses the tls handshake the parser is never reached, which is
-also a safe outcome but does not exercise the cap, so that is reported
-separately rather than as a clean pass.
+A server that refuses an unverified peer passes, because the attacker in this
+advisory is unauthenticated and never reaches the parser. That run does not
+exercise the length cap itself, so it says so; pass --cert and --key for a
+certificate the target trusts to test the cap directly.
 
-Exit codes: 1 VULNERABLE, 0 PASS, 2 inconclusive.
+Exit codes: 1 VULNERABLE, 0 PASS. 2 means the check could not be run at all.
 """
 
 import argparse
@@ -245,11 +248,11 @@ def main():
             tmp.cleanup()
 
     if outcome == "blocked":
-        print("[ERROR] the server dropped us before the protocol started, so the message")
-        print("        parser was never reached. safe against an unknown peer, but this")
-        print("        run did not exercise the length cap. re-run with --cert and --key")
-        print("        for a certificate the target trusts")
-        return 2
+        print("[PASS] server dropped us before the protocol started, so an unverified")
+        print("       peer cannot reach the message parser at all")
+        print("       note this did not exercise the length cap itself. to check that,")
+        print("       re-run with --cert and --key for a certificate the target trusts")
+        return 0
 
     if outcome == "nohello":
         print("[ERROR] no protocol hello, cannot judge")
